@@ -33,9 +33,15 @@ defmodule GRPC.Integration.ServiceTest do
     end
 
     def route_chat(req_enum, stream) do
-      Enum.each(req_enum, fn note ->
-        note = %{note | message: "Reply: #{note.message}"}
-        Server.send_reply(stream, note)
+      tasks =
+        Enum.map(req_enum, fn note ->
+          note = %{note | message: "Reply: #{note.message}"}
+          Task.async(fn ->
+            Server.send_reply(stream, note)
+          end)
+        end)
+      Enum.each(tasks, fn task ->
+        Task.await(task)
       end)
     end
 
@@ -102,6 +108,38 @@ defmodule GRPC.Integration.ServiceTest do
       notes =
         Enum.map(result_enum, fn {:ok, note} ->
           assert "Reply: " <> _msg = note.message
+          note
+        end)
+
+      assert length(notes) == 6
+    end)
+  end
+
+  test "Async Reply" do
+    run_server(FeatureServer, fn port ->
+      {:ok, channel} = GRPC.Stub.connect("localhost:#{port}")
+      stream = channel |> Routeguide.RouteGuide.Stub.route_chat()
+
+      task =
+        Task.async(fn ->
+          Enum.each(1..5, fn i ->
+            point = Routeguide.Point.new(latitude: 0, longitude: rem(i, 3) + 1)
+            note = Routeguide.RouteNote.new(location: point, message: "Message #{i}")
+            GRPC.Stub.send_request(stream, note, [])
+          end)
+        end)
+
+      {:ok, result_enum} = GRPC.Stub.recv(stream)
+      Task.await(task)
+
+      notes =
+        Enum.map(result_enum, fn {:ok, note} ->
+          assert "Reply: " <> msg = note.message
+          if note.message == "Reply: Message 5" do
+            point = Routeguide.Point.new(latitude: 0, longitude: rem(6, 3) + 1)
+            note = Routeguide.RouteNote.new(location: point, message: "Message #{6}")
+            GRPC.Stub.send_request(stream, note, [end_stream: true])
+          end
           note
         end)
 
