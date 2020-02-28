@@ -33,9 +33,15 @@ defmodule GRPC.Integration.ServiceTest do
     end
 
     def route_chat(req_enum, stream) do
+      # Enum.each(req_enum, fn note ->
+      #   note = %{note | message: "Reply: #{note.message}"}
+      #   Server.send_reply(stream, note)
+      # end)
       tasks =
         Enum.map(req_enum, fn note ->
           note = %{note | message: "Reply: #{note.message}"}
+          # Send out reply asynchronosly.
+          # this makes it very likely to read client stream frist before sending out
           Task.async(fn ->
             Server.send_reply(stream, note)
           end)
@@ -125,6 +131,7 @@ defmodule GRPC.Integration.ServiceTest do
           Enum.each(1..5, fn i ->
             point = Routeguide.Point.new(latitude: 0, longitude: rem(i, 3) + 1)
             note = Routeguide.RouteNote.new(location: point, message: "Message #{i}")
+            # note that we don't send end of stream yet here
             GRPC.Stub.send_request(stream, note, [])
           end)
         end)
@@ -135,6 +142,10 @@ defmodule GRPC.Integration.ServiceTest do
       notes =
         Enum.map(result_enum, fn {:ok, note} ->
           assert "Reply: " <> msg = note.message
+          # Due to reading streaming request blocking writing streaming reply,
+          # the very last outgoing messeage will be blocked (Staying in message queue)
+          # until the server receives new client message
+          # message 5 will never be sent out to client.
           if note.message == "Reply: Message 5" do
             point = Routeguide.Point.new(latitude: 0, longitude: rem(6, 3) + 1)
             note = Routeguide.RouteNote.new(location: point, message: "Message #{6}")
